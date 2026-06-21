@@ -1,13 +1,9 @@
 .{
-    .name = "gridtracker",
-    .version = "0.1.0",
+    .name = .gridtracker,
+    .version = "0.2.0",
     .minimum_zig_version = "0.13.0",
-    .dependencies = .{
-        .portaudio = .{
-            .url = "https://github.com/mixays/portaudio-zig/archive/refs/heads/main.tar.gz",
-            .hash = "1220...",
-        },
-    },
+    .fingerprint = 0x75ba0b9dc69e979a,
+    .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",

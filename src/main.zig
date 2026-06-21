@@ -6,11 +6,11 @@ const ui = @import("ui/screen.zig");
 const synth = @import("synth/voice.zig");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    std.debug.print("🎹 GridTracker v0.1.0 — Terminal Music Tracker\n", .{});
+    std.debug.print("🎹 GridTracker v0.2.0 — Terminal Music Tracker\n", .{});
     std.debug.print("Zig + PortAudio + PortMidi\n\n", .{});
 
     // Initialize audio engine
@@ -21,12 +21,15 @@ pub fn main() !void {
     var midi_input = try midi.Input.init(allocator);
     defer midi_input.deinit();
 
-    // Create tracker pattern
-    var pattern = try tracker.Pattern.init(allocator, 64, 8); // 64 rows, 8 channels
-    defer pattern.deinit();
+    // Create sequencer with 256 patterns and 8 channels
+    var sequencer = try tracker.Sequencer.init(allocator, 48000);
+    defer sequencer.deinit();
+
+    // Wire sequencer to audio engine
+    engine.setSequencer(&sequencer);
 
     // Initialize UI
-    var screen = try ui.Screen.init(allocator, &engine, &pattern);
+    var screen = try ui.Screen.init(allocator, &engine, &sequencer);
     defer screen.deinit();
 
     // Main loop

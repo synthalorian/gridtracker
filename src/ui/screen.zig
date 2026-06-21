@@ -1,23 +1,58 @@
 const std = @import("std");
 const audio = @import("../audio/engine.zig");
 const tracker = @import("../tracker/pattern.zig");
+const synth = @import("../synth/voice.zig");
+
+const c = @cImport({
+    @cInclude("stdio.h");
+    @cInclude("unistd.h");
+});
+
+pub const ScreenMode = enum {
+    pattern,
+    song,
+    instrument,
+    mixer,
+};
 
 pub const Screen = struct {
     allocator: std.mem.Allocator,
     engine: *audio.Engine,
-    pattern: *tracker.Pattern,
+    sequencer: *tracker.Sequencer,
     running: bool,
     cursor_row: u32,
     cursor_channel: u32,
+    cursor_param: u32,
+    mode: ScreenMode,
+    song_cursor: u32,
+    inst_cursor: u32,
+    mixer_cursor: u32,
+    edit_value: ?u8,
+    hex_input: [2]u8,
+    hex_pos: u8,
+    filename_buf: [64]u8,
+    filename_len: u8,
+    show_help: bool,
 
-    pub fn init(allocator: std.mem.Allocator, engine: *audio.Engine, pattern: *tracker.Pattern) !Screen {
+    pub fn init(allocator: std.mem.Allocator, engine: *audio.Engine, sequencer: *tracker.Sequencer) !Screen {
         return Screen{
             .allocator = allocator,
             .engine = engine,
-            .pattern = pattern,
+            .sequencer = sequencer,
             .running = true,
             .cursor_row = 0,
             .cursor_channel = 0,
+            .cursor_param = 0,
+            .mode = .pattern,
+            .song_cursor = 0,
+            .inst_cursor = 0,
+            .mixer_cursor = 0,
+            .edit_value = null,
+            .hex_input = .{ 0, 0 },
+            .hex_pos = 0,
+            .filename_buf = undefined,
+            .filename_len = 0,
+            .show_help = false,
         };
     }
 
@@ -26,137 +61,247 @@ pub const Screen = struct {
     }
 
     pub fn run(self: *Screen) !void {
-        // Start audio engine
         try self.engine.start();
         defer self.engine.stop();
 
-        std.debug.print("\nGridTracker started! Press keys to interact:\n", .{});
-        std.debug.print("  [Space] - Play/Stop pattern\n", .{});
-        std.debug.print("  [↑/↓] - Move cursor\n", .{});
-        std.debug.print("  [a-z] - Enter note\n", .{});
-        std.debug.print("  [q] - Quit\n\n", .{});
+        _ = c.printf("GridTracker v0.2.0 started. Press keys to play notes, Space to toggle play, Q to quit.\n");
+        _ = c.printf("Keys: z=C-4 x=D-4 c=E-4 v=F-4 b=G-4 n=A-4 m=B-4 ,=C-5\n");
+        _ = c.printf("      a=C-3 e=E-3 g=G-3 j=A#3 l=C#4 ;=D#4 u=F#4 o=G#4 k=A#4\n");
+        _ = c.printf("      [Space] Play/Stop  [+/-] BPM  [T] Pattern  [G] Song  [Q] Quit\n\n");
 
-        // Simple terminal UI loop
-        const stdin = std.io.getStdIn().reader();
-        var buf: [1]u8 = undefined;
+        // Set up terminal for raw mode
+        const stdin = std.posix.STDIN_FILENO;
+
+        _ = try std.posix.tcgetattr(stdin);
+        var raw = try std.posix.tcgetattr(stdin);
+        raw.lflag.ICANON = false;
+        raw.lflag.ECHO = false;
+        raw.lflag.ISIG = false;
+        raw.cc[@intFromEnum(std.posix.V.MIN)] = 0;
+        raw.cc[@intFromEnum(std.posix.V.TIME)] = 1;
+        try std.posix.tcsetattr(stdin, .FLUSH, raw);
+        defer {
+            var restore = raw;
+            restore.lflag.ICANON = true;
+            restore.lflag.ECHO = true;
+            restore.lflag.ISIG = true;
+            _ = std.posix.tcsetattr(stdin, .FLUSH, restore) catch {};
+        }
 
         while (self.running) {
-            // Draw pattern
-            try self.draw();
+            var buf: [8]u8 = undefined;
+            const read = try std.posix.read(stdin, &buf);
+            if (read == 0) {
+                _ = c.usleep(16000);
+                continue;
+            }
 
-            // Read input
-            const read = try stdin.read(&buf);
-            if (read == 0) continue;
+            // Parse escape sequences
+            if (buf[0] == '\x1B' and read >= 3 and buf[1] == '[') {
+                switch (buf[2]) {
+                    'A' => self.moveUp(),
+                    'B' => self.moveDown(),
+                    'C' => self.moveRight(),
+                    'D' => self.moveLeft(),
+                    else => {},
+                }
+                continue;
+            }
 
             switch (buf[0]) {
-                'q', 'Q' => self.running = false,
+                'Q' => self.running = false,
                 ' ' => {
-                    if (self.pattern.is_playing) {
-                        self.pattern.stop();
-                        std.debug.print("\nStopped.\n", .{});
+                    if (self.sequencer.is_playing) {
+                        self.sequencer.stop();
+                        _ = c.printf("STOPPED\n");
                     } else {
-                        self.pattern.play();
-                        std.debug.print("\nPlaying...\n", .{});
+                        self.sequencer.play();
+                        _ = c.printf("PLAYING\n");
                     }
                 },
-                'w', 'W' => {
-                    if (self.cursor_row > 0) self.cursor_row -= 1;
-                },
-                's', 'S' => {
-                    if (self.cursor_row < self.pattern.rows - 1) self.cursor_row += 1;
-                },
-                'a', 'A' => {
-                    if (self.cursor_channel > 0) self.cursor_channel -= 1;
-                },
-                'd', 'D' => {
-                    if (self.cursor_channel < self.pattern.channels - 1) self.cursor_channel += 1;
-                },
-                // Note entry (simplified - C-4 to B-4 range)
-                'z' => self.setNote(60), // C-4
-                'x' => self.setNote(62), // D-4
-                'c' => self.setNote(64), // E-4
-                'v' => self.setNote(65), // F-4
-                'b' => self.setNote(67), // G-4
-                'n' => self.setNote(69), // A-4
-                'm' => self.setNote(71), // B-4
-                ',' => self.setNote(72), // C-5
+                'W' => self.moveUp(),
+                'S' => self.moveDown(),
+                'a', 'A' => self.moveLeft(),
+                'd', 'D' => self.moveRight(),
+                't', 'T' => { self.mode = .pattern; _ = c.printf("PATTERN MODE\n"); },
+                'g', 'G' => { self.mode = .song; _ = c.printf("SONG MODE\n"); },
+                'i', 'I' => { self.mode = .instrument; _ = c.printf("INSTRUMENT MODE\n"); },
+                'm', 'M' => { self.mode = .mixer; _ = c.printf("MIXER MODE\n"); },
+                'h', 'H' => self.show_help = !self.show_help,
+                '+' => { self.sequencer.setBpm(self.sequencer.bpm + 1); _ = c.printf("BPM: %d\n", self.sequencer.bpm); },
+                '-' => { self.sequencer.setBpm(self.sequencer.bpm - 1); _ = c.printf("BPM: %d\n", self.sequencer.bpm); },
                 '0' => self.clearNote(),
+                '1'...'9' => self.handleDigit(buf[0] - '0'),
+                'f', 'F' => self.saveFile(),
+                'l', 'L' => self.loadFile(),
+                'N' => self.clonePattern(),
+                'p', 'P' => self.prevPattern(),
+                'x', 'X' => self.nextPattern(),
+                'r', 'R' => self.toggleSongMode(),
+                // Note entry (computer keyboard mapping like LSDJ)
+                'z' => self.setNote(60),
+                'y' => self.setNote(62),
+                'c' => self.setNote(64),
+                'v' => self.setNote(65),
+                'b' => self.setNote(67),
+                'n' => self.setNote(69),
+                'w' => self.setNote(71),
+                ',' => self.setNote(72),
+                '.' => self.setNote(74),
+                '/' => self.setNote(76),
+                'e' => self.setNote(52),
+                'j' => self.setNote(55),
+                'k' => self.setNote(58),
+                'u' => self.setNote(61),
+                ';' => self.setNote(63),
+                'o' => self.setNote(66),
+                'q' => self.setNote(68),
+                's' => self.setNote(70),
                 else => {},
             }
         }
 
-        std.debug.print("\nGoodbye! 🎹\n", .{});
+        _ = c.printf("\nGoodbye!\n");
+    }
+
+    fn moveUp(self: *Screen) void {
+        switch (self.mode) {
+            .pattern => { if (self.cursor_row > 0) self.cursor_row -= 1; },
+            .song => { if (self.song_cursor > 0) self.song_cursor -= 1; },
+            .instrument => { if (self.inst_cursor > 0) self.inst_cursor -= 1; },
+            .mixer => { if (self.mixer_cursor > 0) self.mixer_cursor -= 1; },
+        }
+    }
+
+    fn moveDown(self: *Screen) void {
+        switch (self.mode) {
+            .pattern => { if (self.cursor_row < self.sequencer.current_pattern.rows - 1) self.cursor_row += 1; },
+            .song => { if (self.song_cursor < self.sequencer.song.length - 1) self.song_cursor += 1; },
+            .instrument => { self.inst_cursor += 1; },
+            .mixer => { if (self.mixer_cursor < 7) self.mixer_cursor += 1; },
+        }
+    }
+
+    fn moveLeft(self: *Screen) void {
+        switch (self.mode) {
+            .pattern => { if (self.cursor_channel > 0) self.cursor_channel -= 1; },
+            .song => {},
+            .instrument => {},
+            .mixer => {},
+        }
+    }
+
+    fn moveRight(self: *Screen) void {
+        switch (self.mode) {
+            .pattern => { if (self.cursor_channel < self.sequencer.current_pattern.channels - 1) self.cursor_channel += 1; },
+            .song => {},
+            .instrument => {},
+            .mixer => {},
+        }
     }
 
     fn draw(self: *Screen) !void {
-        // Clear screen (ANSI escape)
-        std.debug.print("\x1B[2J\x1B[H", .{});
-        std.debug.print("🎹 GridTracker — Row {d:02}/{d:02} | Ch {d}/{d} | BPM {d:.0}\n", .{
-            self.cursor_row, self.pattern.rows,
-            self.cursor_channel + 1, self.pattern.channels,
-            self.pattern.bpm,
-        });
-        std.debug.print("═" ** 60 ++ "\n", .{});
+        _ = self;
+    }
 
-        // Show visible rows (16 at a time)
-        const start_row = if (self.cursor_row > 8) self.cursor_row - 8 else 0;
-        const end_row = @min(start_row + 16, self.pattern.rows);
+    fn drawPattern(self: *Screen) !void {
+        _ = self;
+    }
 
-        var row: u32 = start_row;
-        while (row < end_row) : (row += 1) {
-            const is_cursor_row = row == self.cursor_row;
-            if (is_cursor_row) {
-                std.debug.print("> ", .{});
-            } else {
-                std.debug.print("  ", .{});
-            }
-            std.debug.print("{d:02} | ", .{row});
+    fn drawSong(self: *Screen) !void {
+        _ = self;
+    }
 
-            for (0..self.pattern.channels) |ch| {
-                if (is_cursor_row and ch == self.cursor_channel) {
-                    std.debug.print("[", .{});
-                } else {
-                    std.debug.print(" ", .{});
-                }
+    fn drawInstrument(_: *Screen) !void {
+    }
 
-                if (self.pattern.getNote(row, @intCast(ch))) |note| {
-                    const note_names = [_][]const u8{"C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"};
-                    const name = note_names[note.note % 12];
-                    const octave = note.note / 12;
-                    std.debug.print("{s}{d} ", .{name, octave});
-                } else {
-                    std.debug.print("... ", .{});
-                }
+    fn drawMixer(self: *Screen) !void {
+        _ = self;
+    }
 
-                if (is_cursor_row and ch == self.cursor_channel) {
-                    std.debug.print("]", .{});
-                } else {
-                    std.debug.print(" ", .{});
-                }
-                std.debug.print("| ", .{});
-            }
-            std.debug.print("\n", .{});
-        }
-        std.debug.print("\nControls: [z-m] notes | [wasd] move | [space] play | [0] clear | [q] quit\n", .{});
+    fn drawHelp(_: *Screen) !void {
     }
 
     fn setNote(self: *Screen, note: u8) void {
-        self.pattern.setNote(self.cursor_row, self.cursor_channel, tracker.Pattern.NoteEvent{
+        const pat = self.sequencer.current_pattern;
+        var locks: synth.ParameterLock = .{};
+
+        locks.volume = 0.8;
+        locks.pan = 0.0;
+
+        pat.setNote(self.cursor_row, self.cursor_channel, tracker.NoteEvent{
             .note = note,
-            .instrument = 0,
+            .instrument = @intCast(self.cursor_channel),
             .volume = 64,
             .effect = 0,
             .effect_param = 0,
+            .locks = locks,
         });
-        // Also trigger for immediate feedback
+
         self.engine.triggerNote(note, 100);
-        // Auto-advance cursor
-        if (self.cursor_row < self.pattern.rows - 1) {
+
+        if (self.cursor_row < pat.rows - 1) {
             self.cursor_row += 1;
         }
     }
 
     fn clearNote(self: *Screen) void {
-        self.pattern.setNote(self.cursor_row, self.cursor_channel, null);
+        self.sequencer.current_pattern.setNote(self.cursor_row, self.cursor_channel, null);
+    }
+
+    fn handleDigit(self: *Screen, digit: u8) void {
+        switch (self.mode) {
+            .song => {
+                self.sequencer.song.setSlot(self.song_cursor, digit, 0);
+            },
+            .mixer => {
+                if (digit >= 1 and digit <= 8) {
+                    self.engine.mixer.toggleMute(digit - 1);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn saveFile(self: *Screen) void {
+        self.sequencer.saveToFile("gridtracker.song") catch |err| {
+            std.debug.print("Save failed: {any}\n", .{err});
+        };
+    }
+
+    fn loadFile(self: *Screen) void {
+        self.sequencer.loadFromFile("gridtracker.song") catch |err| {
+            std.debug.print("Load failed: {any}\n", .{err});
+        };
+    }
+
+    fn clonePattern(self: *Screen) void {
+        const current = self.sequencer.current_pattern_index;
+        if (current < 255) {
+            const src = self.sequencer.bank.getPattern(current).?;
+            const dst = self.sequencer.bank.getPattern(current + 1).?;
+            for (0..src.rows) |r| {
+                for (0..src.channels) |ch| {
+                    dst.data[r].notes[ch] = src.data[r].notes[ch];
+                }
+            }
+            self.sequencer.setPattern(current + 1);
+        }
+    }
+
+    fn prevPattern(self: *Screen) void {
+        if (self.sequencer.current_pattern_index > 0) {
+            self.sequencer.setPattern(self.sequencer.current_pattern_index - 1);
+        }
+    }
+
+    fn nextPattern(self: *Screen) void {
+        if (self.sequencer.current_pattern_index < 255) {
+            self.sequencer.setPattern(self.sequencer.current_pattern_index + 1);
+        }
+    }
+
+    fn toggleSongMode(self: *Screen) void {
+        self.sequencer.song_mode = !self.sequencer.song_mode;
     }
 };
