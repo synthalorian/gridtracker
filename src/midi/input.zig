@@ -24,9 +24,9 @@ pub const Input = struct {
             if (info) |dev| {
                 std.debug.print("  [{d}] {s} (input: {d}, output: {d})\n", .{
                     i,
-                    dev.name,
-                    dev.input,
-                    dev.output,
+                    dev.*.name,
+                    dev.*.input,
+                    dev.*.output,
                 });
             }
         }

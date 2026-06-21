@@ -4,6 +4,9 @@ const c = @cImport({
 });
 
 const Voice = @import("../synth/voice.zig").Voice;
+const Mixer = @import("mixer.zig").Mixer;
+const Sequencer = @import("../tracker/pattern.zig").Sequencer;
+const NoteEvent = @import("../tracker/pattern.zig").NoteEvent;
 
 pub const Engine = struct {
     allocator: std.mem.Allocator,
@@ -11,7 +14,10 @@ pub const Engine = struct {
     buffer_size: u32,
     stream: ?*c.PaStream,
     voices: std.ArrayList(Voice),
-    mutex: std.Thread.Mutex,
+    mixer: Mixer,
+    sequencer: ?*Sequencer,
+    channel_voices: [8]?usize, // which voice index is active per channel
+    voice_lock: std.atomic.Value(u32),
 
     pub fn init(allocator: std.mem.Allocator, sample_rate: u32, buffer_size: u32) !Engine {
         const err = c.Pa_Initialize();
@@ -20,21 +26,23 @@ pub const Engine = struct {
             return error.PortAudioInitFailed;
         }
 
-        var voices = std.ArrayList(Voice).init(allocator);
-        // Pre-allocate 32 polyphonic voices
-        try voices.resize(32);
-        for (voices.items) |*voice| {
-            voice.* = Voice.init(sample_rate);
+        var voices = try std.ArrayList(Voice).initCapacity(allocator, 32);
+        for (0..32) |_| {
+            try voices.append(allocator, Voice.init(sample_rate));
         }
 
-        return Engine{
+        const engine = Engine{
             .allocator = allocator,
             .sample_rate = @floatFromInt(sample_rate),
             .buffer_size = buffer_size,
             .stream = null,
             .voices = voices,
-            .mutex = .{},
+            .mixer = Mixer.init(),
+            .sequencer = null,
+            .channel_voices = .{null} ** 8,
+            .voice_lock = std.atomic.Value(u32).init(0),
         };
+        return engine;
     }
 
     pub fn deinit(self: *Engine) void {
@@ -43,7 +51,21 @@ pub const Engine = struct {
             self.stream = null;
         }
         _ = c.Pa_Terminate();
-        self.voices.deinit();
+        self.voices.deinit(self.allocator);
+    }
+
+    pub fn setSequencer(self: *Engine, seq: *Sequencer) void {
+        self.sequencer = seq;
+    }
+
+    fn acquireLock(self: *Engine) void {
+        while (self.voice_lock.cmpxchgStrong(0, 1, .acquire, .monotonic) != null) {
+            std.atomic.spinLoopHint();
+        }
+    }
+
+    fn releaseLock(self: *Engine) void {
+        self.voice_lock.store(0, .release);
     }
 
     pub fn start(self: *Engine) !void {
@@ -55,27 +77,47 @@ pub const Engine = struct {
                 time_info: [*c]const c.PaStreamCallbackTimeInfo,
                 status_flags: c.PaStreamCallbackFlags,
                 user_data: ?*anyopaque,
-            ) callconv(.C) c_int {
+            ) callconv(.c) c_int {
                 _ = input_buffer;
                 _ = time_info;
                 _ = status_flags;
                 const engine = @as(*Engine, @ptrCast(@alignCast(user_data)));
                 const out = @as([*c]f32, @ptrCast(@alignCast(output_buffer)));
 
-                engine.mutex.lock();
-                defer engine.mutex.unlock();
+                engine.acquireLock();
+                defer engine.releaseLock();
+
+                // Process sequencer
+                if (engine.sequencer) |seq| {
+                    if (seq.tick()) |notes| {
+                        for (notes) |note| {
+                            engine.triggerNoteEvent(note);
+                        }
+                    }
+                }
 
                 var frame: u32 = 0;
                 while (frame < frames_per_buffer) : (frame += 1) {
-                    var sample: f32 = 0.0;
-                    for (engine.voices.items) |*voice| {
+                    var left: f32 = 0.0;
+                    var right: f32 = 0.0;
+                    for (engine.voices.items, 0..) |*voice, vi| {
                         if (voice.active) {
-                            sample += voice.render();
+                            const stereo = voice.render();
+                            // Find which channel this voice belongs to
+                            var ch: usize = 0;
+                            for (0..8) |ci| {
+                                if (engine.channel_voices[ci] == vi) {
+                                    ch = ci;
+                                    break;
+                                }
+                            }
+                            const mixed = engine.mixer.process(ch, stereo);
+                            left += mixed[0];
+                            right += mixed[1];
                         }
                     }
-                    // Stereo output
-                    out[frame * 2] = sample * 0.3;
-                    out[frame * 2 + 1] = sample * 0.3;
+                    out[frame * 2] = left;
+                    out[frame * 2 + 1] = right;
                 }
 
                 return c.paContinue;
@@ -85,10 +127,10 @@ pub const Engine = struct {
         var stream: ?*c.PaStream = null;
         const err = c.Pa_OpenDefaultStream(
             &stream,
-            0, // no input
-            2, // stereo output
+            0,
+            2,
             c.paFloat32,
-            @floatFromInt(self.sample_rate),
+            @as(f64, self.sample_rate),
             self.buffer_size,
             callback,
             self,
@@ -112,22 +154,57 @@ pub const Engine = struct {
         }
     }
 
-    pub fn triggerNote(self: *Engine, note: u8, velocity: u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    pub fn triggerNoteEvent(self: *Engine, event: NoteEvent) void {
+        self.acquireLock();
+        defer self.releaseLock();
 
-        // Find free voice
-        for (self.voices.items) |*voice| {
+        // Find a free voice, prefer same channel
+        const ch = event.instrument % 8;
+        var voice_idx: ?usize = null;
+
+        // Try to reuse voice on same channel
+        if (self.channel_voices[ch]) |cv| {
+            if (!self.voices.items[cv].active) {
+                voice_idx = cv;
+            }
+        }
+
+        // Find any free voice
+        if (voice_idx == null) {
+            for (self.voices.items, 0..) |*voice, i| {
+                if (!voice.active) {
+                    voice_idx = i;
+                    break;
+                }
+            }
+        }
+
+        if (voice_idx) |vi| {
+            self.channel_voices[ch] = vi;
+            var locks = event.locks;
+            // Apply default volume/pan from mixer if not locked
+            if (locks.volume == null) locks.volume = self.mixer.channels[ch].volume;
+            if (locks.pan == null) locks.pan = self.mixer.channels[ch].pan;
+            self.voices.items[vi].trigger(event.note, event.volume * 2, locks);
+        }
+    }
+
+    pub fn triggerNote(self: *Engine, note: u8, velocity: u8) void {
+        self.acquireLock();
+        defer self.releaseLock();
+
+        for (self.voices.items, 0..) |*voice, i| {
             if (!voice.active) {
-                voice.trigger(note, velocity);
+                self.channel_voices[0] = i;
+                voice.trigger(note, velocity, null);
                 break;
             }
         }
     }
 
     pub fn releaseNote(self: *Engine, note: u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.acquireLock();
+        defer self.releaseLock();
 
         for (self.voices.items) |*voice| {
             if (voice.active and voice.note == note) {
