@@ -31,12 +31,25 @@ pub const Input = struct {
             }
         }
 
-        // Open default input device
+        // Open default input device; continue without MIDI if none is
+        // available (e.g. headless machines with no controllers attached).
+        const default_id = c.Pm_GetDefaultInputDeviceID();
+        if (default_id < 0) {
+            std.debug.print("No MIDI input device found; continuing without MIDI input.\n", .{});
+            return Input{
+                .allocator = allocator,
+                .stream = null,
+            };
+        }
+
         var stream: ?*c.PmStream = null;
-        const open_err = c.Pm_OpenInput(&stream, c.Pm_GetDefaultInputDeviceID(), null, 256, null, null);
+        const open_err = c.Pm_OpenInput(&stream, default_id, null, 256, null, null);
         if (open_err != c.pmNoError) {
-            std.debug.print("PortMidi open input failed\n", .{});
-            return error.PortMidiOpenFailed;
+            std.debug.print("PortMidi open input failed; continuing without MIDI input.\n", .{});
+            return Input{
+                .allocator = allocator,
+                .stream = null,
+            };
         }
 
         return Input{

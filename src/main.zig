@@ -10,7 +10,11 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    std.debug.print("🎹 GridTracker v0.2.0 — Terminal Music Tracker\n", .{});
+    var io_threaded: std.Io.Threaded = .init(allocator, .{});
+    defer io_threaded.deinit();
+    const io = io_threaded.io();
+
+    std.debug.print("🎹 GridTracker v0.3.0 — Terminal Music Tracker\n", .{});
     std.debug.print("Zig + PortAudio + PortMidi\n\n", .{});
 
     // Initialize audio engine
@@ -29,7 +33,7 @@ pub fn main() !void {
     engine.setSequencer(&sequencer);
 
     // Initialize UI
-    var screen = try ui.Screen.init(allocator, &engine, &sequencer);
+    var screen = try ui.Screen.init(allocator, &engine, &sequencer, &midi_input, io);
     defer screen.deinit();
 
     // Main loop

@@ -1,7 +1,7 @@
 .{
     .name = .gridtracker,
-    .version = "0.2.0",
-    .minimum_zig_version = "0.13.0",
+    .version = "0.3.0",
+    .minimum_zig_version = "0.16.0",
     .fingerprint = 0x75ba0b9dc69e979a,
     .dependencies = .{},
     .paths = .{
