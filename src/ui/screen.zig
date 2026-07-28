@@ -69,7 +69,7 @@ pub const Screen = struct {
         try self.engine.start();
         defer self.engine.stop();
 
-        _ = c.printf("GridTracker v0.3.0 started. Press keys to play notes, Space to toggle play, Q to quit.\n");
+        _ = c.printf("GridTracker v1.0.0 started. Press keys to play notes, Space to toggle play, Q to quit.\n");
         _ = c.printf("Keys: z=C-4 x=D-4 c=E-4 v=F-4 b=G-4 n=A-4 m=B-4 ,=C-5\n");
         _ = c.printf("      a=C-3 e=E-3 g=G-3 j=A#3 l=C#4 ;=D#4 u=F#4 o=G#4 k=A#4\n");
         _ = c.printf("      [Space] Play/Stop  [+/-] BPM  [T] Pattern  [G] Song  [Q] Quit\n\n");
@@ -135,8 +135,8 @@ pub const Screen = struct {
                 'i', 'I' => { self.mode = .instrument; _ = c.printf("INSTRUMENT MODE\n"); },
                 'm', 'M' => { self.mode = .mixer; _ = c.printf("MIXER MODE\n"); },
                 'h', 'H' => self.show_help = !self.show_help,
-                '+' => { self.sequencer.setBpm(self.sequencer.bpm + 1); _ = c.printf("BPM: %d\n", self.sequencer.bpm); },
-                '-' => { self.sequencer.setBpm(self.sequencer.bpm - 1); _ = c.printf("BPM: %d\n", self.sequencer.bpm); },
+                '+' => { self.sequencer.setBpm(self.sequencer.bpm + 1); _ = c.printf("BPM: %.0f\n", @as(f64, self.sequencer.bpm)); },
+                '-' => { self.sequencer.setBpm(self.sequencer.bpm - 1); _ = c.printf("BPM: %.0f\n", @as(f64, self.sequencer.bpm)); },
                 '0' => self.clearNote(),
                 '1'...'9' => self.handleDigit(buf[0] - '0'),
                 'f', 'F' => self.saveFile(),

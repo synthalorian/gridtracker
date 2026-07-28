@@ -337,6 +337,14 @@ pub const Sequencer = struct {
         self.current_row = 0;
         self.sample_counter = 0;
         self.song_position = 0;
+        // In song mode, start from the pattern in the first song slot
+        if (self.song_mode) {
+            if (self.song.getSlot(0)) |slot| {
+                if (slot.pattern_index != 0xFF) {
+                    self.setPattern(slot.pattern_index);
+                }
+            }
+        }
         self.updateTiming(self.sample_rate);
     }
 
@@ -669,6 +677,20 @@ test "sequencer song mode advances through slots" {
     try testing.expectEqual(@as(u32, 1), seq.song_position);
     try testing.expectEqual(@as(u32, 3), seq.current_pattern_index);
     try testing.expectEqual(@as(u32, 0), seq.current_row);
+}
+
+test "sequencer song mode play loads first slot pattern" {
+    const allocator = testing.allocator;
+    var seq = try Sequencer.init(allocator, 48000);
+    defer seq.deinit();
+
+    seq.song.setSlot(0, 4, 0);
+    seq.song_mode = true;
+    seq.setPattern(9);
+    seq.play();
+
+    // Play must start from the pattern in song slot 0, not the selected one
+    try testing.expectEqual(@as(u32, 4), seq.current_pattern_index);
 }
 
 test "sequencer song mode stops at song end when not looping" {
