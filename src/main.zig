@@ -14,7 +14,7 @@ pub fn main() !void {
     defer io_threaded.deinit();
     const io = io_threaded.io();
 
-    std.debug.print("🎹 GridTracker v0.3.0 — Terminal Music Tracker\n", .{});
+    std.debug.print("🎹 GridTracker v1.0.0 — Terminal Music Tracker\n", .{});
     std.debug.print("Zig + PortAudio + PortMidi\n\n", .{});
 
     // Initialize audio engine
