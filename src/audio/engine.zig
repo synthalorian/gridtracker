@@ -4,6 +4,7 @@ const c = @cImport({
 });
 
 const Voice = @import("../synth/voice.zig").Voice;
+const voice_mod = @import("../synth/voice.zig");
 const Mixer = @import("mixer.zig").Mixer;
 const Sequencer = @import("../tracker/pattern.zig").Sequencer;
 const NoteEvent = @import("../tracker/pattern.zig").NoteEvent;
@@ -158,26 +159,10 @@ pub const Engine = struct {
         self.acquireLock();
         defer self.releaseLock();
 
-        // Find a free voice, prefer same channel
+        // Find a voice for this note: reuse the channel's previous voice
+        // if free, take any free voice, or steal the quietest one.
         const ch = event.instrument % 8;
-        var voice_idx: ?usize = null;
-
-        // Try to reuse voice on same channel
-        if (self.channel_voices[ch]) |cv| {
-            if (!self.voices.items[cv].active) {
-                voice_idx = cv;
-            }
-        }
-
-        // Find any free voice
-        if (voice_idx == null) {
-            for (self.voices.items, 0..) |*voice, i| {
-                if (!voice.active) {
-                    voice_idx = i;
-                    break;
-                }
-            }
-        }
+        const voice_idx = voice_mod.allocateVoice(self.voices.items, &self.channel_voices, ch);
 
         if (voice_idx) |vi| {
             self.channel_voices[ch] = vi;
@@ -193,12 +178,9 @@ pub const Engine = struct {
         self.acquireLock();
         defer self.releaseLock();
 
-        for (self.voices.items, 0..) |*voice, i| {
-            if (!voice.active) {
-                self.channel_voices[0] = i;
-                voice.trigger(note, velocity, null);
-                break;
-            }
+        if (voice_mod.allocateVoice(self.voices.items, &self.channel_voices, 0)) |i| {
+            self.channel_voices[0] = i;
+            self.voices.items[i].trigger(note, velocity, null);
         }
     }
 

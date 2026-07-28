@@ -33,6 +33,20 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run GridTracker");
     run_step.dependOn(&run_cmd.step);
 
+    // Unit tests for the pure-logic modules (wired in via src/tests.zig).
+    // These run headless: no audio hardware, no MIDI devices and no
+    // terminal are required.
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(b.getInstallStep());
+
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const unit_test = b.addTest(.{
+        .name = "gridtracker",
+        .root_module = test_mod,
+    });
+    const run_test = b.addRunArtifact(unit_test);
+    test_step.dependOn(&run_test.step);
 }

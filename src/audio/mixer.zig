@@ -104,3 +104,162 @@ pub const Mixer = struct {
         self.master_volume = std.math.clamp(volume, 0.0, 1.0);
     }
 };
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+test "mixer defaults pass signal with channel and master volume" {
+    var mixer = Mixer.init();
+    const out = mixer.process(0, .{ 1.0, 1.0 });
+    // channel volume 0.8 * master 0.9, center pan
+    try testing.expectApproxEqAbs(@as(f32, 0.72), out[0], 0.0001);
+    try testing.expectApproxEqAbs(@as(f32, 0.72), out[1], 0.0001);
+}
+
+test "mixer per-channel volume" {
+    var mixer = Mixer.init();
+    mixer.setMasterVolume(1.0);
+    mixer.setVolume(2, 0.5);
+    const out = mixer.process(2, .{ 1.0, 1.0 });
+    try testing.expectApproxEqAbs(@as(f32, 0.5), out[0], 0.0001);
+
+    // Volume is clamped
+    mixer.setVolume(2, 5.0);
+    try testing.expectEqual(@as(f32, 1.0), mixer.channels[2].volume);
+    mixer.setVolume(2, -1.0);
+    try testing.expectEqual(@as(f32, 0.0), mixer.channels[2].volume);
+}
+
+test "mixer mute silences channel" {
+    var mixer = Mixer.init();
+    mixer.toggleMute(3);
+    const out = mixer.process(3, .{ 1.0, 1.0 });
+    try testing.expectEqual(@as(f32, 0.0), out[0]);
+    try testing.expectEqual(@as(f32, 0.0), out[1]);
+
+    // Other channels unaffected; unmute restores
+    try testing.expect(mixer.process(0, .{ 1.0, 1.0 })[0] != 0.0);
+    mixer.toggleMute(3);
+    try testing.expect(mixer.process(3, .{ 1.0, 1.0 })[0] != 0.0);
+}
+
+test "mixer pan hard left and right" {
+    var mixer = Mixer.init();
+    mixer.setMasterVolume(1.0);
+    mixer.setVolume(0, 1.0);
+
+    mixer.setPan(0, -1.0);
+    var out = mixer.process(0, .{ 1.0, 1.0 });
+    try testing.expectEqual(@as(f32, 1.0), out[0]);
+    try testing.expectEqual(@as(f32, 0.0), out[1]);
+
+    mixer.setPan(0, 1.0);
+    out = mixer.process(0, .{ 1.0, 1.0 });
+    try testing.expectEqual(@as(f32, 0.0), out[0]);
+    try testing.expectEqual(@as(f32, 1.0), out[1]);
+}
+
+test "mixer solo isolates channel" {
+    var mixer = Mixer.init();
+    mixer.toggleSolo(1);
+    try testing.expect(mixer.any_solo);
+
+    // Non-solo channels are silent
+    try testing.expectEqual(@as(f32, 0.0), mixer.process(0, .{ 1.0, 1.0 })[0]);
+    // Solo channel plays
+    try testing.expect(mixer.process(1, .{ 1.0, 1.0 })[0] != 0.0);
+
+    mixer.toggleSolo(1);
+    try testing.expect(!mixer.any_solo);
+    try testing.expect(mixer.process(0, .{ 1.0, 1.0 })[0] != 0.0);
+}
+
+test "mixer out-of-range channel is silent and safe" {
+    var mixer = Mixer.init();
+    const out = mixer.process(99, .{ 1.0, 1.0 });
+    try testing.expectEqual(@as(f32, 0.0), out[0]);
+    try testing.expectEqual(@as(f32, 0.0), out[1]);
+
+    // Setters ignore out-of-range channels
+    mixer.setVolume(99, 0.1);
+    mixer.setPan(99, 1.0);
+    mixer.toggleMute(99);
+    mixer.toggleSolo(99);
+    try testing.expect(!mixer.any_solo);
+}
+
+test "mixer init defaults" {
+    const mixer = Mixer.init();
+    try std.testing.expectEqual(@as(f32, 0.9), mixer.master_volume);
+    try std.testing.expect(!mixer.any_solo);
+    for (mixer.channels) |ch| {
+        try std.testing.expectEqual(@as(f32, 0.8), ch.volume);
+        try std.testing.expectEqual(@as(f32, 0.0), ch.pan);
+        try std.testing.expect(!ch.mute);
+        try std.testing.expect(!ch.solo);
+    }
+}
+
+test "mixer process applies channel and master volume" {
+    var mixer = Mixer.init();
+    mixer.setVolume(0, 0.5);
+    mixer.setMasterVolume(1.0);
+    const out = mixer.process(0, .{ 1.0, 1.0 });
+    try std.testing.expectEqual(@as(f32, 0.5), out[0]);
+    try std.testing.expectEqual(@as(f32, 0.5), out[1]);
+}
+
+test "mixer solo silences non-solo channels" {
+    var mixer = Mixer.init();
+    mixer.toggleSolo(1);
+    try std.testing.expect(mixer.any_solo);
+    const soloed = mixer.process(1, .{ 1.0, 1.0 });
+    try std.testing.expect(soloed[0] > 0.0);
+    const other = mixer.process(0, .{ 1.0, 1.0 });
+    try std.testing.expectEqual(@as(f32, 0.0), other[0]);
+    // Un-solo restores everything
+    mixer.toggleSolo(1);
+    try std.testing.expect(!mixer.any_solo);
+    const restored = mixer.process(0, .{ 1.0, 1.0 });
+    try std.testing.expect(restored[0] > 0.0);
+}
+
+test "mixer pan attenuates opposite side" {
+    var mixer = Mixer.init();
+    mixer.setVolume(0, 1.0);
+    mixer.setMasterVolume(1.0);
+    mixer.setPan(0, -1.0); // hard left
+    const left = mixer.process(0, .{ 1.0, 1.0 });
+    try std.testing.expectEqual(@as(f32, 1.0), left[0]);
+    try std.testing.expectEqual(@as(f32, 0.0), left[1]);
+
+    mixer.setPan(0, 1.0); // hard right
+    const right = mixer.process(0, .{ 1.0, 1.0 });
+    try std.testing.expectEqual(@as(f32, 0.0), right[0]);
+    try std.testing.expectEqual(@as(f32, 1.0), right[1]);
+}
+
+test "mixer volume and pan are clamped" {
+    var mixer = Mixer.init();
+    mixer.setVolume(0, 5.0);
+    try std.testing.expectEqual(@as(f32, 1.0), mixer.channels[0].volume);
+    mixer.setVolume(0, -2.0);
+    try std.testing.expectEqual(@as(f32, 0.0), mixer.channels[0].volume);
+    mixer.setPan(0, 99.0);
+    try std.testing.expectEqual(@as(f32, 1.0), mixer.channels[0].pan);
+    mixer.setMasterVolume(-1.0);
+    try std.testing.expectEqual(@as(f32, 0.0), mixer.master_volume);
+}
+
+test "mixer out-of-range channel is safe" {
+    var mixer = Mixer.init();
+    const out = mixer.process(100, .{ 1.0, 1.0 });
+    try std.testing.expectEqual(@as(f32, 0.0), out[0]);
+    mixer.setVolume(100, 0.5); // must not crash or corrupt
+    mixer.toggleMute(100);
+    mixer.toggleSolo(100);
+    try std.testing.expect(!mixer.any_solo);
+}

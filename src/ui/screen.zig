@@ -1,5 +1,6 @@
 const std = @import("std");
 const audio = @import("../audio/engine.zig");
+const midi = @import("../midi/input.zig");
 const tracker = @import("../tracker/pattern.zig");
 const synth = @import("../synth/voice.zig");
 
@@ -19,6 +20,8 @@ pub const Screen = struct {
     allocator: std.mem.Allocator,
     engine: *audio.Engine,
     sequencer: *tracker.Sequencer,
+    midi_input: ?*midi.Input,
+    io: std.Io,
     running: bool,
     cursor_row: u32,
     cursor_channel: u32,
@@ -34,11 +37,13 @@ pub const Screen = struct {
     filename_len: u8,
     show_help: bool,
 
-    pub fn init(allocator: std.mem.Allocator, engine: *audio.Engine, sequencer: *tracker.Sequencer) !Screen {
+    pub fn init(allocator: std.mem.Allocator, engine: *audio.Engine, sequencer: *tracker.Sequencer, midi_input: ?*midi.Input, io: std.Io) !Screen {
         return Screen{
             .allocator = allocator,
             .engine = engine,
             .sequencer = sequencer,
+            .midi_input = midi_input,
+            .io = io,
             .running = true,
             .cursor_row = 0,
             .cursor_channel = 0,
@@ -64,7 +69,7 @@ pub const Screen = struct {
         try self.engine.start();
         defer self.engine.stop();
 
-        _ = c.printf("GridTracker v0.2.0 started. Press keys to play notes, Space to toggle play, Q to quit.\n");
+        _ = c.printf("GridTracker v0.3.0 started. Press keys to play notes, Space to toggle play, Q to quit.\n");
         _ = c.printf("Keys: z=C-4 x=D-4 c=E-4 v=F-4 b=G-4 n=A-4 m=B-4 ,=C-5\n");
         _ = c.printf("      a=C-3 e=E-3 g=G-3 j=A#3 l=C#4 ;=D#4 u=F#4 o=G#4 k=A#4\n");
         _ = c.printf("      [Space] Play/Stop  [+/-] BPM  [T] Pattern  [G] Song  [Q] Quit\n\n");
@@ -89,6 +94,8 @@ pub const Screen = struct {
         }
 
         while (self.running) {
+            self.pollMidi();
+
             var buf: [8]u8 = undefined;
             const read = try std.posix.read(stdin, &buf);
             if (read == 0) {
@@ -162,6 +169,19 @@ pub const Screen = struct {
         }
 
         _ = c.printf("\nGoodbye!\n");
+    }
+
+    fn pollMidi(self: *Screen) void {
+        const m = self.midi_input orelse return;
+        var events: [16]midi.MidiEvent = undefined;
+        const count = m.readEvents(&events);
+        for (events[0..count]) |event| {
+            if (event.isNoteOn()) {
+                self.engine.triggerNote(event.note(), event.velocity());
+            } else if (event.isNoteOff()) {
+                self.engine.releaseNote(event.note());
+            }
+        }
     }
 
     fn moveUp(self: *Screen) void {
@@ -264,13 +284,13 @@ pub const Screen = struct {
     }
 
     fn saveFile(self: *Screen) void {
-        self.sequencer.saveToFile("gridtracker.song") catch |err| {
+        self.sequencer.saveToFile(self.io, "gridtracker.song") catch |err| {
             std.debug.print("Save failed: {any}\n", .{err});
         };
     }
 
     fn loadFile(self: *Screen) void {
-        self.sequencer.loadFromFile("gridtracker.song") catch |err| {
+        self.sequencer.loadFromFile(self.io, "gridtracker.song") catch |err| {
             std.debug.print("Load failed: {any}\n", .{err});
         };
     }
