@@ -13,7 +13,12 @@ Terminal music tracker with real-time synthesis. Built with Zig + PortAudio + Po
 - **MIDI input**: Note on/off from external MIDI keyboards (gracefully disabled when no device is present)
 - **Polyphonic**: 32 voices with ADSR envelopes and quietest-first voice stealing
 - **Save/Load**: Full song persistence (patterns, locks, song arrangement, BPM) to a binary `.song` file
-- **Terminal UI**: Keyboard-driven interface with pattern, song, instrument, and mixer screens
+- **Terminal UI**: Keyboard-driven, line-based interface with pattern, song, instrument, and mixer input modes
+
+> Note: the UI is intentionally minimal (line-based, no drawn grid). The
+> `draw*` functions in `ui/screen.zig` are stubs reserved for a future
+> full-screen TUI; all editing and playback functionality is driven by the
+> controls below.
 
 ## Building
 
@@ -55,8 +60,7 @@ Note entry uses the lower row of the keyboard (LSDJ-style). Cursor movement is
 | `Space` | Play/stop pattern |
 | `+` / `-` | BPM up/down |
 | `0` | Clear note at cursor |
-| `T` / `G` / `I` / `M` | Pattern / Song / Instrument / Mixer screen |
-| `H` | Toggle help |
+| `T` / `G` / `I` / `M` | Pattern / Song / Instrument / Mixer input mode |
 | `R` | Toggle song mode (pattern chaining) |
 | `P` / `X` | Previous / next pattern in bank |
 | `N` | Clone current pattern into next slot |
