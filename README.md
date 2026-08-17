@@ -41,7 +41,7 @@ Requires Zig 0.16.0 or newer.
 zig build test
 ```
 
-Runs the unit-test suite for the pure-logic modules (`synthalorian 🎹🤺/voice.zig`,
+Runs the unit-test suite for the pure-logic modules (`synth/voice.zig`,
 `tracker/pattern.zig`, `audio/mixer.zig`) via `src/tests.zig`. The tests are
 fully headless: no audio hardware, MIDI devices, or terminal required.
 
@@ -87,7 +87,7 @@ src/
 │   └── mixer.zig     # Channel strips: volume/pan/mute/solo/master
 ├── midi/
 │   └── input.zig     # PortMidi input (optional, headless-safe)
-├── synthalorian 🎹🤺/
+├── synth/
 │   └── voice.zig     # Polyphonic voice: waveforms, ADSR, filter, locks
 ├── tracker/
 │   └── pattern.zig   # Patterns, pattern bank, song arrangement, sequencer, save/load
