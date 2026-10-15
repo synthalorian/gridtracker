@@ -1,3 +1,5 @@
+![gridtracker](.github/preview.png)
+
 # GridTracker 🎹
 
 Terminal music tracker with real-time synthesis. Built with Zig + PortAudio + PortMidi.
